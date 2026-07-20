@@ -1,0 +1,377 @@
+#!/usr/bin/env Rscript
+
+suppressPackageStartupMessages({
+  library(GenomicRanges)
+  library(data.table)
+  library(chiptsne2)
+  library(ggplot2)
+  library(rtracklayer)
+  library(zoo)
+  library(patchwork)
+})
+
+gr_file <- "DAR_final/fig1_DARs_combined_annotated.rds"
+
+bw_files <- list(
+  UF_fem_inf  = "female_inf/UF.pooled.bigWig",
+  IF_fem_inf  = "female_inf/IF.pooled.bigWig",
+  UF_male_inf = "male_inf/UNINF.pooled.bigWig",
+  IF_male_inf = "male_inf/INF.pooled.bigWig"
+)
+
+output_dir <- "reproducibility/Figure1G"
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+gr_dars_annotated <- readRDS(gr_file)
+
+bw_cfg <- data.table(
+  path = unlist(bw_files),
+  name = names(bw_files)
+)
+
+fetch_cfg <- FetchConfig(
+  bw_cfg,
+  read_mode = "bigwig",
+  view_size = 2500,
+  window_size = 50
+)
+
+centerOnSignalMax <- function(
+  gr,
+  bw_path,
+  window = 2500,
+  smooth_window = 5
+) {
+  message("Centering ", length(gr), " regions using ", bw_path)
+
+  gr_exp <- resize(
+    gr,
+    width = window,
+    fix = "center"
+  )
+
+  centers <- numeric(length(gr_exp))
+
+  for (i in seq_along(gr_exp)) {
+    region <- gr_exp[i]
+
+    sig <- tryCatch(
+      rtracklayer::import(
+        bw_path,
+        which = region,
+        as = "NumericList"
+      ),
+      error = function(e) NULL
+    )
+
+    if (
+      is.null(sig) ||
+      length(sig) == 0 ||
+      length(sig[[1]]) == 0
+    ) {
+      centers[i] <- start(region) + window / 2
+      next
+    }
+
+    smoothed <- zoo::rollmean(
+      as.numeric(sig[[1]]),
+      k = smooth_window,
+      fill = NA,
+      align = "center"
+    )
+
+    max_idx <- which.max(smoothed)
+
+    centers[i] <- if (
+      length(max_idx) == 0 ||
+      is.na(max_idx)
+    ) {
+      start(region) + window / 2
+    } else {
+      start(region) + max_idx - 1
+    }
+  }
+
+  trim(
+    GRanges(
+      seqnames = seqnames(gr_exp),
+      ranges = IRanges(
+        start = round(centers - window / 2),
+        width = window
+      ),
+      strand = strand(gr_exp)
+    )
+  )
+}
+
+gr_up <- gr_dars_annotated[
+  gr_dars_annotated$log2FC > 0
+]
+
+gr_down <- gr_dars_annotated[
+  gr_dars_annotated$log2FC < 0
+]
+
+names(gr_up) <- paste0(
+  "up_region_",
+  seq_along(gr_up)
+)
+
+names(gr_down) <- paste0(
+  "down_region_",
+  seq_along(gr_down)
+)
+
+gr_up_centered <- centerOnSignalMax(
+  gr_up,
+  bw_files$IF_fem_inf
+)
+
+gr_down_centered <- centerOnSignalMax(
+  gr_down,
+  bw_files$UF_fem_inf
+)
+
+names(gr_up_centered) <- names(gr_up)
+names(gr_down_centered) <- names(gr_down)
+
+gr_centered <- c(
+  gr_up_centered,
+  gr_down_centered
+)
+
+olap <- findOverlaps(
+  gr_centered,
+  gr_dars_annotated
+)
+
+gr_centered$source <- NA_character_
+gr_centered$log2FC <- NA_real_
+
+gr_centered$source[
+  queryHits(olap)
+] <- gr_dars_annotated$source[
+  subjectHits(olap)
+]
+
+gr_centered$log2FC[
+  queryHits(olap)
+] <- gr_dars_annotated$log2FC[
+  subjectHits(olap)
+]
+
+priority_order <- c(
+  "Male vs Female (IF)",
+  "Male vs Female (UF)",
+  "Male IF vs UF",
+  "Female IF vs UF"
+)
+
+assign_primary_group <- function(source_str) {
+  if (is.na(source_str)) {
+    return(NA_character_)
+  }
+
+  sources <- strsplit(
+    source_str,
+    ";",
+    fixed = TRUE
+  )[[1]]
+
+  for (grp in priority_order) {
+    if (grp %in% sources) {
+      return(grp)
+    }
+  }
+
+  NA_character_
+}
+
+gr_centered$primary_group <- vapply(
+  gr_centered$source,
+  assign_primary_group,
+  character(1)
+)
+
+group_counts <- table(
+  gr_centered$primary_group
+)
+
+valid_groups <- names(
+  group_counts[group_counts >= 20]
+)
+
+gr_filtered <- gr_centered[
+  !is.na(gr_centered$primary_group) &
+    gr_centered$primary_group %in% valid_groups
+]
+
+message("Centered-region groups:")
+print(table(gr_filtered$primary_group))
+
+saveRDS(
+  gr_filtered,
+  file.path(
+    output_dir,
+    "Figure1G_centered_DARs.rds"
+  )
+)
+
+ct2 <- ChIPtsne2.from_FetchConfig(
+  fetch_config = fetch_cfg,
+  query_gr = gr_filtered
+)
+
+rowData(ct2)$group <- gr_filtered$primary_group
+rowData(ct2)$log2FC <- gr_filtered$log2FC
+
+ct2 <- sortRegions(
+  ct2,
+  sort_strategy = "sort",
+  group_VAR = "group"
+)
+
+saveRDS(
+  ct2,
+  file.path(output_dir, "Figure1G_ct2_debug.rds")
+)
+
+cat("\n==== DEBUG ====\n")
+cat("Class:\n")
+print(class(ct2))
+
+cat("\nrowData columns:\n")
+print(colnames(rowData(ct2)))
+
+cat("\ncolData columns:\n")
+print(colnames(colData(ct2)))
+
+cat("\nGroup counts:\n")
+print(table(rowData(ct2)$group, useNA="ifany"))
+
+cat("\nSample names:\n")
+print(rownames(colData(ct2)))
+
+cat("\nDimensions:\n")
+print(dim(ct2))
+
+flush.console()
+quit(save="no")
+
+cd <- colData(ct2)
+cd$sample <- rownames(cd)
+colData(ct2) <- cd
+
+ct2$sample <- factor(
+  ct2$sample,
+  levels = c(
+    "UF_fem_inf",
+    "IF_fem_inf",
+    "UF_male_inf",
+    "IF_male_inf"
+  )
+)
+
+saveRDS(
+  ct2,
+  file.path(
+    output_dir,
+    "Figure1G_ct2.rds"
+  )
+)
+
+message("Final ChIPtsne2 groups:")
+print(table(rowData(ct2)$group))
+
+ht <- plotSignalHeatmap(
+  ct2,
+  group_VARS = "group",
+  sort_strategy = "none",
+  relative_heatmap_width = 0.4,
+  heatmap_fill_limits = c(0, 150),
+  heatmap_colors = c(
+    "#577AB2",
+    "#FFFFE0",
+    "#BC412B"
+  )
+)
+
+custom_colors <- c(
+  UF_fem_inf = "gray40",
+  IF_fem_inf = "darkred",
+  UF_male_inf = "steelblue",
+  IF_male_inf = "goldenrod"
+)
+
+lp <- plotSignalLinePlot(
+  ct2,
+  group_VAR = "group",
+  color_VAR = "sample",
+  facet_VAR = NULL,
+  moving_average_window = 5,
+  n_splines = 5,
+  linewidth = 1.2
+) +
+  scale_color_manual(
+    values = custom_colors
+  ) +
+  facet_grid(
+    group ~ sample,
+    scales = "free_y"
+  ) +
+  labs(
+    x = "Distance from Region Center (bp)",
+    y = "Signal Intensity"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid = element_blank(),
+    panel.background = element_blank(),
+    axis.line = element_line(color = "black"),
+    axis.ticks = element_line(color = "black"),
+    axis.text = element_text(color = "black"),
+    axis.title = element_text(color = "black"),
+    strip.background = element_rect(
+      fill = "gray90",
+      color = "black"
+    ),
+    strip.text = element_text(
+      face = "bold",
+      size = 12,
+      color = "black"
+    ),
+    legend.title = element_text(size = 13),
+    legend.text = element_text(size = 12)
+  )
+
+combined_plot <- wrap_elements(ht) + lp +
+  plot_layout(widths = c(2, 1))
+
+ggsave(
+  file.path(
+    output_dir,
+    "Figure1G_DAR_heatmap_lineplot.pdf"
+  ),
+  plot = combined_plot,
+  width = 14,
+  height = 9
+)
+
+ggsave(
+  file.path(
+    output_dir,
+    "Figure1G_DAR_heatmap_lineplot.png"
+  ),
+  plot = combined_plot,
+  width = 14,
+  height = 9,
+  dpi = 300
+)
+
+writeLines(
+  capture.output(sessionInfo()),
+  file.path(
+    output_dir,
+    "Figure1G_sessionInfo.txt"
+  )
+)

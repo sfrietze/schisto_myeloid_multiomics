@@ -1,0 +1,38 @@
+# R
+.Rhistory
+.RData
+.Ruserdata
+
+# RStudio
+.Rproj.user/
+
+# macOS
+.DS_Store
+
+# Linux editor backups
+*~
+
+# Logs
+logs/
+*.log
+*.out
+*.err
+
+# Slurm
+slurm-*.out
+slurm-*.err
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Python
+__pycache__/
+*.pyc
+
+# Archives
+*.zip
+
+# Large genome browser tracks (hosted on Zenodo)
+data/atacseq/bigwig/
