@@ -1,4 +1,5 @@
 #!/usr/bin/env Rscript
+# See README.md for upstream ATAC-seq preprocessing provenance.
 
 suppressPackageStartupMessages({
   library(DESeq2)
