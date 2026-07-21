@@ -2,9 +2,12 @@
 
 This repository contains the downstream analyses used to reproduce the ATAC-seq and RNA-seq results presented in the manuscript.
 
-Raw sequencing data are available through GEO (accession GSE337316). Processed data required to reproduce the analyses are included in this repository or are available through Zenodo where noted.
+Raw sequencing data have been deposited in GEO under accession GSE337316 and will be publicly available upon publication. Processed data required to reproduce the analyses are included in this repository or are archived in Zenodo.
+
+Zenodo archive (latest version): https://doi.org/10.5281/zenodo.21473501
 
 ## ATAC-seq preprocessing
+
 
 Raw ATAC-seq FASTQ files were processed using the `nf-core/atacseq` pipeline executed with Nextflow and Apptainer.
 
